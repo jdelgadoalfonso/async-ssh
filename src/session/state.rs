@@ -1,5 +1,4 @@
-use std::rc::Rc;
-use std::cell::RefCell;
+use std::sync::{Arc, Mutex};
 use std::collections::HashMap;
 use std::ops::Deref;
 use futures;
@@ -14,10 +13,10 @@ pub(crate) struct Inner {
 }
 
 #[derive(Default, Clone)]
-pub(crate) struct Ref(Rc<RefCell<Inner>>);
+pub(crate) struct Ref(Arc<Mutex<Inner>>);
 
 impl Deref for Ref {
-    type Target = Rc<RefCell<Inner>>;
+    type Target = Arc<Mutex<Inner>>;
     fn deref(&self) -> &Self::Target {
         &self.0
     }
@@ -40,7 +39,7 @@ impl thrussh::client::Handler for Ref {
         session: thrussh::client::Session,
     ) -> Self::SessionUnit {
         {
-            let mut state = self.0.borrow_mut();
+            let mut state = self.0.lock().unwrap();
             let state = state
                 .state_for
                 .get_mut(&channel)
@@ -64,7 +63,7 @@ impl thrussh::client::Handler for Ref {
         session: thrussh::client::Session,
     ) -> Self::SessionUnit {
         {
-            let mut state = self.0.borrow_mut();
+            let mut state = self.0.lock().unwrap();
             let state = state
                 .state_for
                 .get_mut(&channel)
@@ -87,7 +86,7 @@ impl thrussh::client::Handler for Ref {
         session: thrussh::client::Session,
     ) -> Self::SessionUnit {
         if ext.is_none() {
-            let mut state = self.0.borrow_mut();
+            let mut state = self.0.lock().unwrap();
             let state = state
                 .state_for
                 .get_mut(&channel)
@@ -110,7 +109,7 @@ impl thrussh::client::Handler for Ref {
         session: thrussh::client::Session,
     ) -> Self::SessionUnit {
         {
-            let mut state = self.0.borrow_mut();
+            let mut state = self.0.lock().unwrap();
             let state = state
                 .state_for
                 .get_mut(&channel)
@@ -135,7 +134,7 @@ impl thrussh::client::Handler for Ref {
         session: thrussh::client::Session,
     ) -> Self::SessionUnit {
         {
-            let mut state = self.0.borrow_mut();
+            let mut state = self.0.lock().unwrap();
             let state = state
                 .state_for
                 .get_mut(&channel)
@@ -157,7 +156,7 @@ impl thrussh::client::Handler for Ref {
         session: thrussh::client::Session,
     ) -> Self::SessionUnit {
         {
-            let mut state = self.0.borrow_mut();
+            let mut state = self.0.lock().unwrap();
             let state = state
                 .state_for
                 .get_mut(&channel)

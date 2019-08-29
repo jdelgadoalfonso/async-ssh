@@ -1,4 +1,4 @@
-use tokio_io::{AsyncRead, AsyncWrite};
+use tokio::io::{AsyncRead, AsyncWrite};
 use futures::{self, Async, Future, Poll};
 use std::io::prelude::*;
 use std::io;
@@ -23,7 +23,7 @@ pub(crate) struct State {
 }
 
 /// A newly opened, but not yet established channel.
-pub struct ChannelOpenFuture<'a, S: AsyncRead + AsyncWrite> {
+pub struct ChannelOpenFuture<'a, S: AsyncRead + AsyncWrite + Send> {
     cmd: &'a str,
     session: SharableConnection<S>,
     state: session::state::Ref,
@@ -31,7 +31,7 @@ pub struct ChannelOpenFuture<'a, S: AsyncRead + AsyncWrite> {
     first_round: bool,
 }
 
-impl<'a, S: AsyncRead + AsyncWrite> ChannelOpenFuture<'a, S> {
+impl<'a, S: AsyncRead + AsyncWrite + Send> ChannelOpenFuture<'a, S> {
     pub(crate) fn new(
         cmd: &'a str,
         session: SharableConnection<S>,
@@ -48,17 +48,17 @@ impl<'a, S: AsyncRead + AsyncWrite> ChannelOpenFuture<'a, S> {
     }
 }
 
-impl<'a, S: AsyncRead + AsyncWrite + thrussh::Tcp> Future for ChannelOpenFuture<'a, S> {
+impl<'a, S: AsyncRead + AsyncWrite + thrussh::Tcp + Send> Future for ChannelOpenFuture<'a, S> {
     type Item = Channel;
     type Error = thrussh::HandlerError<()>;
 
     fn poll(&mut self) -> futures::Poll<Self::Item, Self::Error> {
         if self.first_round {
-            self.session.0.borrow_mut().c.abort_read()?;
+            self.session.0.lock().unwrap().c.abort_read()?;
             self.first_round = false;
         }
 
-        let mut s = self.state.borrow_mut();
+        let mut s = self.state.lock().unwrap();
         let state = s.state_for
             .get_mut(&self.id)
             .expect("no state entry for valid channel");
@@ -67,7 +67,7 @@ impl<'a, S: AsyncRead + AsyncWrite + thrussh::Tcp> Future for ChannelOpenFuture<
         match state.open_state.take() {
             Some(Ok(_)) => {
                 {
-                    let mut s = self.session.0.borrow_mut();
+                    let mut s = self.session.0.lock().unwrap();
                     assert!(s.c.channel_is_open(self.id));
                     s.c.exec(self.id, true, self.cmd);
                     // poke connection thread to say that we sent stuff
@@ -117,7 +117,7 @@ impl Future for ExitStatusFuture {
     type Error = ();
 
     fn poll(&mut self) -> Poll<Self::Item, Self::Error> {
-        let mut s = self.state.borrow_mut();
+        let mut s = self.state.lock().unwrap();
         let state = s.state_for
             .get_mut(&self.id)
             .expect("no state entry for valid channel");
@@ -136,7 +136,7 @@ impl Future for ExitStatusFuture {
 
 impl Read for Channel {
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        let mut s = self.state.borrow_mut();
+        let mut s = self.state.lock().unwrap();
         let state = s.state_for
             .get_mut(&self.id)
             .expect("no state entry for valid channel");

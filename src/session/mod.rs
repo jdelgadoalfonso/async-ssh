@@ -1,9 +1,6 @@
-use tokio_io::{AsyncRead, AsyncWrite};
-use std::sync::Arc;
-use std::rc::Rc;
-use std::cell::RefCell;
+use tokio::io::{AsyncRead, AsyncWrite};
+use std::sync::{Arc, Mutex};
 use futures::Future;
-use tokio_core::reactor::Handle;
 use channel;
 use {Connection, SharableConnection};
 use thrussh;
@@ -15,29 +12,48 @@ pub(crate) mod state;
 ///
 /// All you can really do with this in authenticate it using one of the `authenticate_*` methods.
 /// You'll most likely want [`NewSession::authenticate_key`].
-pub struct NewSession<S: AsyncRead + AsyncWrite> {
+pub struct NewSession<S: AsyncRead + AsyncWrite + Send> {
     c: Connection<S>,
-    handle: Handle,
 }
 
-impl<S: AsyncRead + AsyncWrite + 'static> NewSession<S> {
+impl<S: AsyncRead + AsyncWrite + Send + 'static> NewSession<S> {
     /// Authenticate as the given user using the given keypair.
     ///
     /// See also
-    /// [`thrussh::client::Connection::authenticate_key`](https://docs.rs/thrussh/0.19/thrussh/client/struct.Connection.html#method.authenticate_key).
+    /// [`thrussh::client::Connection::authenticate_key`](https://docs.rs/thrussh/0.21/thrussh/client/struct.Connection.html#method.authenticate_key).
     pub fn authenticate_key(
         self,
         user: &str,
         key: thrussh_keys::key::KeyPair,
-    ) -> Box<Future<Item = Session<S>, Error = thrussh::HandlerError<()>>>
+    ) -> Box<dyn Future<Item = Session<S>, Error = thrussh::HandlerError<()>> + Send>
     where
         S: thrussh::Tcp,
     {
-        let NewSession { c, handle } = self;
+        let NewSession { c } = self;
         Box::new(
             c.c
-                .authenticate_key(user, key)
-                .map(move |c| Session::make(Connection { c, task: None }, handle)),
+                .authenticate_key(user, Arc::new(key))
+                .map(move |c| Session::make(Connection { c, task: None })),
+        )
+    }
+
+    /// Authenticate as the given user using a plain password.
+    ///
+    /// See also
+    /// [`thrussh::client::Connection::authenticate_password`](https://docs.rs/thrussh/0.21/thrussh/client/struct.Connection.html#method.authenticate_password).
+    pub fn authenticate_password(
+        self,
+        user: &str,
+        pass: String,
+    ) -> Box<dyn Future<Item = Session<S>, Error = thrussh::HandlerError<()>> + Send>
+    where
+        S: thrussh::Tcp,
+    {
+        let NewSession { c } = self;
+        Box::new(
+            c.c
+                .authenticate_password(user, pass)
+                .map(move |c| Session::make(Connection { c, task: None })),
         )
     }
 }
@@ -47,9 +63,9 @@ impl<S: AsyncRead + AsyncWrite + 'static> NewSession<S> {
 /// You can use this session to execute commands on the remote host using [`Session::open_exec`].
 /// This will give you back a [`Channel`], which can be used to read from the resulting process'
 /// `STDOUT`, or to write the the process' `STDIN`.
-pub struct Session<S: AsyncRead + AsyncWrite>(SharableConnection<S>);
+pub struct Session<S: AsyncRead + AsyncWrite + Send>(SharableConnection<S>);
 
-impl<S: AsyncRead + AsyncWrite + thrussh::Tcp + 'static> Session<S> {
+impl<S: AsyncRead + AsyncWrite + thrussh::Tcp + Send + 'static> Session<S> {
     /// Establish a new SSH session on top of the given stream.
     ///
     /// The resulting SSH session is initially unauthenticated (see [`NewSession`]), and must be
@@ -57,18 +73,16 @@ impl<S: AsyncRead + AsyncWrite + thrussh::Tcp + 'static> Session<S> {
     ///
     /// Note that the reactor behind the given `handle` *must* continue to be driven for any
     /// channels created from this [`Session`] to work.
-    pub fn new(stream: S, handle: &Handle) -> Result<NewSession<S>, thrussh::HandlerError<()>> {
+    pub fn new(stream: S) -> Result<NewSession<S>, thrussh::HandlerError<()>> {
         thrussh::client::Connection::new(Arc::default(), stream, state::Ref::default(), None)
             .map(|c| NewSession {
                 c: Connection { c, task: None },
-                handle: handle.clone(),
             })
             .map_err(thrussh::HandlerError::Error)
     }
 
-    fn make(c: Connection<S>, handle: Handle) -> Self {
-        let c = SharableConnection(Rc::new(RefCell::new(c)));
-        handle.spawn(c.clone());
+    fn make(c: Connection<S>) -> Self {
+        let c = SharableConnection(Arc::new(Mutex::new(c)));
         Session(c)
     }
 
@@ -79,9 +93,9 @@ impl<S: AsyncRead + AsyncWrite + thrussh::Tcp + 'static> Session<S> {
     ///
     /// Calling this method clears the error.
     pub fn last_error(&mut self) -> Option<thrussh::HandlerError<()>> {
-        let connection = (self.0).0.borrow();
+        let connection = (self.0).0.lock().unwrap();
         let handler = connection.c.handler();
-        let mut state = handler.borrow_mut();
+        let mut state = handler.lock().unwrap();
         state.errored_with.take()
     }
 
@@ -91,14 +105,15 @@ impl<S: AsyncRead + AsyncWrite + thrussh::Tcp + 'static> Session<S> {
     /// will manifest only as reads or writes no longer succeeding. To get the underlying error,
     /// call [`Session::last_error`].
     pub fn open_exec<'a>(&mut self, cmd: &'a str) -> channel::ChannelOpenFuture<'a, S> {
-        let mut session = (self.0).0.borrow_mut();
+        let mut session = (self.0).0.lock().unwrap();
         let state = session.c.handler().clone();
 
         let channel_id = (&mut *session.c)
             .channel_open_session()
             .expect("sessions are always authenticated");
         state
-            .borrow_mut()
+            .lock()
+            .unwrap()
             .state_for
             .insert(channel_id, channel::State::default());
         channel::ChannelOpenFuture::new(cmd, self.0.clone(), state, channel_id)

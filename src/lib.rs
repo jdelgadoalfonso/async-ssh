@@ -52,12 +52,10 @@
 extern crate futures;
 extern crate thrussh;
 extern crate thrussh_keys;
-extern crate tokio_core;
-extern crate tokio_io;
+extern crate tokio;
 
-use tokio_io::{AsyncRead, AsyncWrite};
-use std::rc::Rc;
-use std::cell::RefCell;
+use tokio::io::{AsyncRead, AsyncWrite};
+use std::sync::{Arc, Mutex};
 use futures::Future;
 
 mod session;
@@ -66,35 +64,35 @@ mod channel;
 pub use channel::{Channel, ChannelOpenFuture, ExitStatusFuture};
 pub use session::{NewSession, Session};
 
-struct Connection<S: AsyncRead + AsyncWrite> {
+struct Connection<S: AsyncRead + AsyncWrite + Send> {
     c: thrussh::client::Connection<S, session::state::Ref>,
     task: Option<futures::task::Task>,
 }
 
-struct SharableConnection<S: AsyncRead + AsyncWrite>(Rc<RefCell<Connection<S>>>);
+struct SharableConnection<S: AsyncRead + AsyncWrite + Send>(Arc<Mutex<Connection<S>>>);
+
 impl<S> Clone for SharableConnection<S>
 where
-    S: AsyncRead + AsyncWrite,
+    S: AsyncRead + AsyncWrite + Send,
 {
     fn clone(&self) -> Self {
         SharableConnection(self.0.clone())
     }
 }
 
-impl<S: AsyncRead + AsyncWrite + thrussh::Tcp> Future for SharableConnection<S> {
+impl<S: AsyncRead + AsyncWrite + thrussh::Tcp + Send> Future for SharableConnection<S> {
     type Item = ();
     type Error = ();
 
     fn poll(&mut self) -> futures::Poll<Self::Item, Self::Error> {
         // NOTE: SessionStateRef as Handler cannot use Rc<RefMut<C<S>>>
-        let mut c = self.0.borrow_mut();
-        c.task = Some(futures::task::current());
-        match c.c.poll() {
+        let mut mc = self.0.lock().unwrap();
+        mc.task = Some(futures::task::current());
+        match mc.c.poll() {
             Ok(r) => Ok(r),
             Err(e) => {
-                let state = self.0.borrow();
-                let state = state.c.handler();
-                let mut state = state.borrow_mut();
+                let state = mc.c.handler();
+                let mut state = state.lock().unwrap();
                 state.errored_with = Some(e);
                 Err(())
             }

@@ -22,6 +22,11 @@ maintenance = { status = "experimental" }
 
 [dependencies]
 futures = "0.1"
-thrussh = "0.21"
+thrussh = "0.21.5"
 tokio = "0.1"
-thrussh-keys = "0.11"
+thrussh-keys = "0.11.9"
+
+[replace]
+"thrussh:0.21.5" = { git = "https://github.com/jdelgadoalfonso/thrussh.git" }
+"thrussh-keys:0.11.9" = { git = "https://github.com/jdelgadoalfonso/thrussh.git" }
+"thrussh-libsodium:0.1.4" = { git = "https://github.com/jdelgadoalfonso/thrussh.git" }

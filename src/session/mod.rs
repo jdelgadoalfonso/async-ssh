@@ -52,7 +52,7 @@ impl<S: AsyncRead + AsyncWrite + Send + 'static> NewSession<S> {
         let NewSession { c } = self;
         Box::new(
             c.c
-                .authenticate_password(user, pass)
+                .authenticate_password(user.to_string(), pass)
                 .map(move |c| Session::make(Connection { c, task: None })),
         )
     }
